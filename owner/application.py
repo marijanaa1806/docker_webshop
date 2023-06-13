@@ -1,5 +1,6 @@
 import csv
 import io
+import json
 
 from flask import Flask, request, jsonify, Response;
 from flask_jwt_extended import JWTManager
@@ -19,6 +20,11 @@ jwt = JWTManager ( application );
 @roleCheck(role="admin")
 def cats():
     statistics = []
+    categories = Category.query.outerjoin(ProductCat).outerjoin(Product) \
+        .outerjoin(ProductOrd).group_by(Category.id) \
+        .order_by(func.sum(ProductOrd.requested).desc()).order_by(Category.name)
+    for category in categories:
+        statistics.append(category.name)
     return jsonify({
         "statistics": statistics
     }),200
@@ -28,9 +34,6 @@ def cats():
 @roleCheck(role="admin")
 def prods():
     statistics = []
-    #subquery = session.query(ProductOrder.product_id).distinct().subquery()
-    #products = session.query(Product).filter(exists().where(Product.id == subquery.c.product_id)).all()
-    products = Product.query.join(ProductOrd).group_by(Product.id).all();
     prod2 = database.session.query(
         Product.name,
         func.sum(ProductOrd.received),
@@ -42,12 +45,12 @@ def prods():
     for pp in prod2:
         statistics.append({
             "name": pp[0],
-            "sold": pp[1],
-            "waiting":pp[2]
+            "sold": int(pp[1]),
+            "waiting": int(pp[2])
         })
     return jsonify({
         "statistics": statistics
-    }),200
+    }), 200
 
 
 @application.route("/update", methods=["POST"])
@@ -82,7 +85,7 @@ def update():
         database.session.add(product);
         database.session.commit();
         for cat in categories:
-            categ = Category.query.filter(Category.name==cat).first();
+            categ = Category.query.filter(Category.name == cat).first();
             idc = 0;
             if not categ:
                 newCategory = Category(name=cat);
