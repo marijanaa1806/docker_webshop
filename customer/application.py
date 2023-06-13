@@ -21,8 +21,8 @@ jwt = JWTManager(application)
 @application.route ( "/search", methods = ["GET"] )
 @roleCheck(role="customer")
 def getProducts ( ):
-    cat = request.args["category"];
-    pr = request.args["name"];
+    pr = request.args.get("name", None)
+    cat = request.args.get("category", None)
     categories = []
     products = []
     if(cat and pr):
@@ -76,26 +76,26 @@ def getProducts ( ):
         categories = Category.query.with_entities(Category.name).all()
         products = Product.query.all()
 
-    json_category = []
-    for cat in categories:
-        json_category.append(cat[0])
-    json_product = []
+    catResult = []
+    prResult = []
+    for catg in categories:
+        catResult.append(catg.name)
     for product in products:
-        product_categories = []
+        categs = []
         for product_cat in product.category:
-            product_categories.append(product_cat.name)
-        json_product.append({
-            "category": product_categories,
+            categs.append(product_cat.name)
+        prResult.append({
+            "category": categs,
             "id": product.id,
             "name": product.name,
             "price": product.price,
         })
 
     final_json = {
-        "categories": json_category,
-        "products": json_product
+        "categories": catResult,
+        "products": prResult
     }
-    return jsonify(final_json)
+    return jsonify(final_json),200
 
 
 @application.route ( "/order", methods = ["POST"] )
@@ -109,7 +109,6 @@ def order():
         }),400
     orderprice = 0;
     identity = get_jwt_identity();
-    #user = User.query.filter(User.email==identity).first();
     order = Order(price=0, status="CREATED", timeStamp=datetime.now(), userEmail=identity)
     database.session.add(order);
     database.session.commit();
@@ -133,7 +132,7 @@ def order():
             return jsonify({
                 "message": "Invalid product quantity for request number {}.".format(i)
             }), 400
-        product = Product.query.get(pid);
+        product =  Product.query.filter(Product.id==pid).first();
         if not product:
             return jsonify({
                 "message": "Invalid product for request number {}.".format(i)
@@ -157,21 +156,29 @@ def pay():
     return ""
 
 @application.route ( "/status", methods = ["GET"] )
+@jwt_required ( )
 @roleCheck(role="customer")
 def status():
+    identity = get_jwt_identity();
     query = database.session.query(
         Order.price,
         Order.status,
-        Order.timestamp,
+        Order.timeStamp,
         Product.name,
         Product.price,
-        ProductOrd.received,
+        ProductOrd.requested,
         Category.name
-    ).join(ProductOrd).join(Product).join(ProductCat).join(Category).all()
+    ).filter (
+        and_ (
+            Order.id == ProductOrd.ordId,
+            ProductOrd.productId == Product.id,
+            Product.id == ProductCat.productId,
+            Category.id == ProductCat.catId,
+            Order.userEmail == identity
+        )
+    ).all ( )
 
-    # Generate the response structure
-    response = {"orders": []}
-    order_dict = {}
+    orders = []
 
     for result in query:
         order_price = result[0]
@@ -182,31 +189,44 @@ def status():
         product_quantity = result[5]
         category_name = result[6]
 
-        product_dict = {
-            "name": product_name,
-            "price": product_price,
-            "quantity": product_quantity,
-            "categories": [category_name]
-            #appending categories???????
-
-        }
-
-        # Check if the order already exists in the order_dict
-        if order_timestamp not in order_dict:
-            order_dict[order_timestamp] = {
-                "products": [product_dict],
+        order_exists = False
+        for order in orders:
+            if order["timestamp"] == order_timestamp:
+                order_exists = True
+                product_exists = False
+                for product in order["products"]:
+                    if product["name"] == product_name and product["price"] == product_price:
+                        product_exists = True
+                        product["categories"].append(category_name)
+                        break
+                if not product_exists:
+                    newProduct = {
+                        "name": product_name,
+                        "price": product_price,
+                        "quantity": product_quantity,
+                        "categories": [category_name]
+                    }
+                    order["products"].append(newProduct)
+                break
+        if not order_exists:
+            newOrder = {
+                "products": [
+                    {
+                        "name": product_name,
+                        "price": product_price,
+                        "quantity": product_quantity,
+                        "categories": [category_name]
+                    }
+                ],
                 "price": order_price,
                 "status": order_status,
                 "timestamp": order_timestamp
             }
-        else:
-            # Append the product to the existing order
-            order_dict[order_timestamp]["products"].append(product_dict)
-
-    # Append the orders to the response
-    response["orders"] = list(order_dict.values())
-
-    return jsonify(response),200
+            orders.append(newOrder)
+    database.session.close()
+    return jsonify({
+        "orders":orders
+    }),200
 
 @application.route ( "/delivered", methods = ["POST"] )
 @roleCheck(role="customer")
@@ -216,16 +236,16 @@ def confirm():
         return jsonify({
             "message":"Missing order id."
         }),400
-    if int(orderId)<=0:
+    if int(orderId) <= 0:
         return jsonify({
             "message": "Invalid order id."
         }), 400
-    order = Order.query.filter(Order.id==orderId).first();
+    order = Order.query.filter(Order.id == orderId).first();
     if not order:
         return jsonify({
             "message": "Invalid order id."
         }), 400
-    if (order.status!="PENDING"):
+    if (order.status != "PENDING"):
         return jsonify({
             "message": "Invalid order id."
         }), 400
